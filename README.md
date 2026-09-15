@@ -66,3 +66,14 @@ npm run dev
 # Run automated tests for Jesty's module
 npm test
 ```
+
+---
+
+## 🌐 Application Routing Architecture
+
+The application has been separated into two completely isolated environments to simulate the real-world deployment:
+
+- **Student Kiosk (`/student`)**: This route serves the `StudentKioskApp`. It represents the dedicated touch-screen appliance located at the handwashing station. It handles the AI vision, face recognition, and handwashing guidance. It does *not* contain any navigation to the teacher portal. The application defaults to this route.
+- **Teacher Portal (`/teacher`)**: This route serves the `TeacherDashboardApp`. It represents a separate interface that teachers log into remotely from their own devices to view analytics, compliance, and student history.
+
+Both interfaces communicate with the same backend database to sync data.

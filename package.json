@@ -14,7 +14,8 @@
     "@vladmandic/face-api": "^1.7.15",
     "firebase": "^10.12.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.3"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",
