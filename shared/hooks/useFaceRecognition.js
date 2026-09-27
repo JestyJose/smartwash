@@ -24,8 +24,11 @@ export function useFaceRecognition({
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [detectedDescriptor, setDetectedDescriptor] = useState(null);
   const [error, setError] = useState(null);
+  const [multipleFacesDetected, setMultipleFacesDetected] = useState(false);
+  const [unknownFaceDetected, setUnknownFaceDetected] = useState(false);
 
   const scanTimerRef = useRef(null);
+  const consecutiveMatchesRef = useRef([]);
 
   // Load enrolled students from Firestore / store
   const refreshStudents = useCallback(async () => {
@@ -78,23 +81,60 @@ export function useFaceRecognition({
 
       // Perform face-api detection if models are loaded
       if (faceapi.nets.ssdMobilenetv1.isLoaded) {
-        const detection = await faceapi
-          .detectSingleFace(video)
+        const detections = await faceapi
+          .detectAllFaces(video)
           .withFaceLandmarks()
-          .withFaceDescriptor();
+          .withFaceDescriptors();
 
-        if (detection) {
-          const descriptor = Array.from(detection.descriptor);
-          setDetectedDescriptor(descriptor);
-          const match = matchFaceDescriptor(descriptor, enrolledStudents, distanceThreshold);
-          setMatchedStudent(match.matchedStudent);
-          setDistance(match.distance);
-          setConfidence(match.confidence);
+        if (detections && detections.length > 0) {
+          if (detections.length > 1) {
+            setMultipleFacesDetected(true);
+            setUnknownFaceDetected(false);
+            setDetectedDescriptor(null);
+            setMatchedStudent(null);
+            setDistance(Infinity);
+            setConfidence(0);
+            consecutiveMatchesRef.current = [];
+          } else {
+            setMultipleFacesDetected(false);
+            const descriptor = Array.from(detections[0].descriptor);
+            setDetectedDescriptor(descriptor);
+            
+            const match = matchFaceDescriptor(descriptor, enrolledStudents, distanceThreshold);
+            
+            if (match.matchedStudent) {
+              setUnknownFaceDetected(false);
+              // Add to consecutive matches
+              consecutiveMatchesRef.current.push(match.matchedStudent.studentId);
+              if (consecutiveMatchesRef.current.length > 2) {
+                consecutiveMatchesRef.current.shift();
+              }
+              
+              // Only confirm identity if we have 2 consecutive identical matches
+              const allMatch = consecutiveMatchesRef.current.length === 2 && 
+                               consecutiveMatchesRef.current.every(id => id === match.matchedStudent.studentId);
+              
+              if (allMatch) {
+                setMatchedStudent(match.matchedStudent);
+                setDistance(match.distance);
+                setConfidence(match.confidence);
+              }
+            } else {
+              setUnknownFaceDetected(true);
+              setMatchedStudent(null);
+              setDistance(Infinity);
+              setConfidence(0);
+              consecutiveMatchesRef.current = [];
+            }
+          }
         } else {
+          setMultipleFacesDetected(false);
+          setUnknownFaceDetected(false);
           setDetectedDescriptor(null);
           setMatchedStudent(null);
           setDistance(Infinity);
           setConfidence(0);
+          consecutiveMatchesRef.current = [];
         }
       }
     } catch (err) {
@@ -183,6 +223,8 @@ export function useFaceRecognition({
     isDetecting,
     isModelLoaded,
     detectedDescriptor,
+    multipleFacesDetected,
+    unknownFaceDetected,
     error,
     refreshStudents,
     simulateDetection,

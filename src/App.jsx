@@ -1,6 +1,6 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { StudentKioskApp } from '../apps/student-app/src/StudentKioskApp.jsx';
+import { StudentKioskApp } from '../apps/student-app/src/StudentApp.jsx';
 import { TeacherDashboardApp } from '../apps/teacher-dashboard/src/TeacherDashboardApp.jsx';
 
 class ErrorBoundary extends React.Component {
@@ -74,8 +74,8 @@ export default function App() {
       <ErrorBoundary>
         <BrowserRouter>
           <Routes>
-            <Route path="/student" element={<StudentKioskApp useMock={true} />} />
-            <Route path="/teacher" element={<TeacherDashboardApp />} />
+            <Route path="/student" element={<StudentKioskApp useMock={false} />} />
+            <Route path="/teacher/*" element={<TeacherDashboardApp />} />
             <Route path="*" element={<Navigate to="/student" replace />} />
           </Routes>
         </BrowserRouter>

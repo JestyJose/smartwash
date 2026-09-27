@@ -1,6 +1,6 @@
 import React, { useReducer, useRef, useCallback } from 'react';
-import { kioskReducer, INITIAL_KIOSK_STATE, KIOSK_STATES } from './kioskStateMachine.js';
-import { KioskCamera } from './components/KioskCamera.jsx';
+import { kioskReducer, INITIAL_KIOSK_STATE, KIOSK_STATES } from './studentStateMachine.js';
+import { KioskCamera } from './components/StudentCamera.jsx';
 import { WashingView } from './components/WashingView.jsx';
 import { FeedbackView } from './components/FeedbackView.jsx';
 
@@ -8,29 +8,55 @@ import { useFaceRecognition } from '../../../shared/hooks/useFaceRecognition.js'
 import { useStepRecognition } from '../../../shared/hooks/useStepRecognition.js';
 import { createSession, updateSession } from '../../../shared/services/sessionService.js';
 import { calculateHandwashScore } from '../../../shared/services/scoringService.js';
+import { isMockFirebase } from '../../../shared/firebaseConfig.js';
 
 export function StudentKioskApp({ useMock = true }) {
   const [state, dispatch] = useReducer(kioskReducer, INITIAL_KIOSK_STATE);
   const videoRef = useRef(null);
 
   // 1. Jesty's Face ID Hook
-  const { matchedStudent, confidence: faceConfidence, enrollCurrentFace, detectedDescriptor } = useFaceRecognition({
+  const { matchedStudent, confidence: faceConfidence, detectedDescriptor, multipleFacesDetected, unknownFaceDetected } = useFaceRecognition({
     videoRef,
-    enabled: state.currentState === KIOSK_STATES.IDLE || state.currentState === KIOSK_STATES.IDENTIFYING,
-    useMock
+    enabled: [KIOSK_STATES.IDLE, KIOSK_STATES.IDENTIFYING, KIOSK_STATES.UNKNOWN_STUDENT, KIOSK_STATES.MULTIPLE_FACES].includes(state.currentState),
+    useMock: false,
+    distanceThreshold: 0.50, // Strict threshold for Phase 3
+    scanIntervalMs: 400
   });
 
-  // Auto-start identification when a face is detected in IDLE state
+  // Autonomous Face Recognition State Machine Integration
   React.useEffect(() => {
-    if (state.currentState === KIOSK_STATES.IDLE && detectedDescriptor) {
-      dispatch({ type: 'START_IDENTIFICATION' });
+    if ([KIOSK_STATES.WASHING, KIOSK_STATES.SCORING, KIOSK_STATES.FEEDBACK].includes(state.currentState)) return;
+
+    if (multipleFacesDetected) {
+      if (state.currentState !== KIOSK_STATES.MULTIPLE_FACES) dispatch({ type: 'MULTIPLE_FACES_DETECTED' });
+      return;
     }
-  }, [state.currentState, detectedDescriptor]);
+
+    if (unknownFaceDetected) {
+      if (state.currentState !== KIOSK_STATES.UNKNOWN_STUDENT) dispatch({ type: 'UNKNOWN_FACE_DETECTED' });
+      return;
+    }
+
+    if (detectedDescriptor && !matchedStudent && state.currentState !== KIOSK_STATES.IDENTIFYING) {
+      dispatch({ type: 'START_IDENTIFICATION' });
+      return;
+    }
+
+    // If no face is detected, return to IDLE
+    if (!detectedDescriptor && !multipleFacesDetected && !unknownFaceDetected && state.currentState !== KIOSK_STATES.IDLE && state.currentState !== KIOSK_STATES.IDENTIFYING) {
+      // Keep identifying running a bit to avoid flicker if they look away for a frame,
+      // but immediately reset if they were in an error state and step away.
+      if (state.currentState === KIOSK_STATES.UNKNOWN_STUDENT || state.currentState === KIOSK_STATES.MULTIPLE_FACES) {
+         const timer = setTimeout(() => dispatch({ type: 'RESET_TO_IDLE' }), 1500);
+         return () => clearTimeout(timer);
+      }
+    }
+  }, [state.currentState, multipleFacesDetected, unknownFaceDetected, matchedStudent, detectedDescriptor]);
 
   // When face recognized: transition to WASHING
   React.useEffect(() => {
     if (state.currentState === KIOSK_STATES.IDENTIFYING && matchedStudent) {
-      // Delay the transition by 2.5 seconds so the user can clearly see their name recognized
+      // Delay the transition by 1.2 seconds so the user can clearly see their name recognized
       const timer = setTimeout(async () => {
         const result = await createSession(matchedStudent.studentId, matchedStudent.name);
         dispatch({
@@ -40,7 +66,7 @@ export function StudentKioskApp({ useMock = true }) {
             sessionId: result.id
           }
         });
-      }, 2500);
+      }, 1200);
       
       return () => clearTimeout(timer);
     }
@@ -52,7 +78,9 @@ export function StudentKioskApp({ useMock = true }) {
     activeStep: mlActiveStep,
     confidence: stepConfidence,
     progress: mlProgress,
-    resetTracker
+    resetTracker,
+    telemetry,
+    missedSteps
   } = useStepRecognition({
     videoRef,
     enabled: state.currentState === KIOSK_STATES.WASHING,
@@ -60,15 +88,6 @@ export function StudentKioskApp({ useMock = true }) {
     confidenceThreshold: 0.60
   });
 
-  // Watch ML step progression to trigger finish
-  React.useEffect(() => {
-    if (state.currentState === KIOSK_STATES.WASHING && mlActiveStep >= 6) {
-      const timer = setTimeout(() => {
-        handleFinishWashing();
-      }, 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [state.currentState, mlActiveStep]);
 
   const handleStartIdentification = useCallback(() => {
     dispatch({ type: 'START_IDENTIFICATION' });
@@ -82,13 +101,14 @@ export function StudentKioskApp({ useMock = true }) {
     dispatch({ type: 'START_SCORING' });
 
     // Calculate explainable WHO compliance score (0-100) using scoringService
-    const scoreBreakdown = calculateHandwashScore(state.completedSteps);
-    const computedScore = scoreBreakdown.totalScore || 95;
+    const scoreBreakdown = calculateHandwashScore(state.completedSteps, missedSteps);
+    const computedScore = scoreBreakdown.totalScore;
 
     if (state.sessionId) {
       await updateSession(state.sessionId, {
-        score: computedScore,
-        steps: state.completedSteps,
+        complianceScore: computedScore,
+        completedSteps: state.completedSteps,
+        missedSteps: missedSteps,
         status: 'completed'
       });
     }
@@ -106,6 +126,22 @@ export function StudentKioskApp({ useMock = true }) {
     resetTracker();
     dispatch({ type: 'RESET_TO_IDLE' });
   }, [resetTracker]);
+
+  // Watch ML step progression to trigger finish
+  React.useEffect(() => {
+    if (state.currentState === KIOSK_STATES.WASHING && mlActiveStep >= 6) {
+      const timer = setTimeout(() => {
+        handleStepComplete({
+          stepNumber: 6,
+          durationMs: 5000,
+          avgConfidence: stepConfidence || 0.88,
+          completed: true
+        });
+        handleFinishWashing();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [state.currentState, mlActiveStep, handleFinishWashing, handleStepComplete, stepConfidence]);
 
   return (
     <div style={{
@@ -146,14 +182,19 @@ export function StudentKioskApp({ useMock = true }) {
               SMART WASH KIOSK
             </h1>
             <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-              Joel's Student Kiosk Web Shell · State: <strong style={{ color: '#10b981', textTransform: 'uppercase' }}>{state.currentState}</strong>
+              State: <strong style={{ color: '#10b981', textTransform: 'uppercase' }}>{state.currentState}</strong>
             </span>
+            {isMockFirebase && (
+              <div style={{ marginLeft: '12px', padding: '2px 6px', background: '#f59e0b', color: '#fff', fontSize: '9px', fontWeight: 800, borderRadius: '4px', display: 'inline-block' }}>
+                [ENV: LOCAL DEMO MODE - PERSISTENCE EPHEMERAL]
+              </div>
+            )}
           </div>
         </div>
 
         {/* State Indicator Pills */}
         <div style={{ display: 'flex', gap: '8px', background: 'rgba(30, 41, 59, 0.6)', padding: '4px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.08)' }}>
-          {['idle', 'identifying', 'washing', 'scoring', 'feedback'].map(st => (
+          {Object.values(KIOSK_STATES).map(st => (
             <span
               key={st}
               style={{
@@ -166,7 +207,7 @@ export function StudentKioskApp({ useMock = true }) {
                 color: state.currentState === st ? '#ffffff' : '#64748b'
               }}
             >
-              {st}
+              {st.replace('_', ' ')}
             </span>
           ))}
         </div>
@@ -175,13 +216,42 @@ export function StudentKioskApp({ useMock = true }) {
       {/* Main Kiosk Content Grid */}
       <main style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', padding: '24px' }}>
         {/* Left Column: Live Camera Overlay */}
-        <KioskCamera
-          videoRef={videoRef}
-          state={state.currentState}
-          activeStep={mlActiveStep}
-          confidence={stepConfidence || faceConfidence}
-          student={state.student || matchedStudent}
-        />
+        <div style={{ position: 'relative' }}>
+          <KioskCamera
+            videoRef={videoRef}
+            state={state.currentState}
+            activeStep={mlActiveStep}
+            confidence={stepConfidence || faceConfidence}
+            student={state.student || matchedStudent}
+          />
+          {telemetry && (
+            <div style={{
+              position: 'absolute',
+              top: '10px',
+              left: '10px',
+              background: 'rgba(0,0,0,0.85)',
+              border: '1px solid #ef4444',
+              padding: '12px',
+              borderRadius: '8px',
+              fontFamily: 'monospace',
+              fontSize: '11px',
+              color: '#fff',
+              zIndex: 9999,
+              boxShadow: '0 4px 6px rgba(0,0,0,0.5)',
+              pointerEvents: 'none'
+            }}>
+              <div style={{ color: '#ef4444', fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #ef4444', paddingBottom: '4px' }}>[HANDWASH_DEBUG_HUD]</div>
+              <div>Camera Stream: <span style={{ color: telemetry.camActive ? '#22c55e' : '#ef4444' }}>{telemetry.camActive ? 'ACTIVE (320x320 @ 10fps)' : 'INACTIVE'}</span></div>
+              <div>Hand Tracker: [Left: <span style={{ color: telemetry.leftHand ? '#22c55e' : '#ef4444' }}>{telemetry.leftHand ? 'YES' : 'NO'}</span> | Right: <span style={{ color: telemetry.rightHand ? '#22c55e' : '#ef4444' }}>{telemetry.rightHand ? 'YES' : 'NO'}</span>]</div>
+              <div>Raw Prediction: <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>{telemetry.rawPrediction}</span></div>
+              <div>Raw Confidence: <span style={{ color: '#eab308' }}>{(telemetry.rawConfidence || 0).toFixed(2)}</span></div>
+              <div>Target Expected Step: <span style={{ color: '#a855f7' }}>{telemetry.expectedStep}</span></div>
+              <div>Debounce Counter: {telemetry.debounceCount} / {telemetry.requiredFrames}</div>
+              <div style={{ marginTop: '4px', fontSize: '9px', color: '#9ca3af' }}>Completed: [{state.completedSteps.join(', ')}]</div>
+              <div style={{ fontSize: '9px', color: '#ef4444' }}>Missed: [{missedSteps.join(', ')}]</div>
+            </div>
+          )}
+        </div>
 
         {/* Right Column: Dynamic State Views */}
         <div style={{
@@ -236,50 +306,54 @@ export function StudentKioskApp({ useMock = true }) {
                   </p>
                 </>
               )}
-              {useMock && !matchedStudent && (
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button
-                    onClick={() => dispatch({
-                      type: 'STUDENT_IDENTIFIED',
-                      payload: {
-                        student: { studentId: 'STU_101', name: 'Demo Student' },
-                        sessionId: `session_${Date.now()}`
+            </div>
+          )}
+
+          {state.currentState === KIOSK_STATES.MULTIPLE_FACES && (
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+              <div style={{ fontSize: '56px', textShadow: '0 0 20px rgba(239, 68, 68, 0.5)' }}>⚠️</div>
+              <h2 style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: '#f87171' }}>ONE STUDENT AT A TIME</h2>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: '16px', maxWidth: '400px' }}>
+                Please ensure only one person is in the camera frame to proceed with identification.
+              </p>
+            </div>
+          )}
+
+          {state.currentState === KIOSK_STATES.UNKNOWN_STUDENT && (
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+              <div style={{ fontSize: '56px', textShadow: '0 0 20px rgba(245, 158, 11, 0.5)' }}>❓</div>
+              <h2 style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: '#fbbf24' }}>STUDENT NOT RECOGNIZED</h2>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: '16px', maxWidth: '400px' }}>
+                We couldn't find a matching student profile. Please step closer or contact a teacher to enroll.
+              </p>
+              
+              <div style={{ marginTop: '20px', background: 'rgba(255,255,255,0.05)', padding: '20px', borderRadius: '12px', width: '100%', maxWidth: '300px' }}>
+                <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px', textTransform: 'uppercase', fontWeight: 'bold' }}>Manual Fallback</div>
+                <input 
+                  type="text" 
+                  id="manual-student-id"
+                  placeholder="Enter Student ID (e.g. STU_101)" 
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.3)', color: '#fff', marginBottom: '12px', boxSizing: 'border-box' }}
+                />
+                <button 
+                  onClick={async () => {
+                    const val = document.getElementById('manual-student-id').value;
+                    if (val) {
+                      const { getStudentById } = await import('../../../shared/services/studentService.js');
+                      const st = await getStudentById(val);
+                      if (st) {
+                        const result = await createSession(st.studentId, st.name);
+                        dispatch({ type: 'STUDENT_IDENTIFIED', payload: { student: st, sessionId: result.id } });
+                      } else {
+                        alert('Student ID not found in database.');
                       }
-                    })}
-                    style={{
-                      padding: '8px 16px',
-                      borderRadius: '8px',
-                      border: '1px dashed #c084fc',
-                      background: 'rgba(192, 132, 252, 0.1)',
-                      color: '#e9d5ff',
-                      fontSize: '12px',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    Simulate Face Recognized ➔
-                  </button>
-                  <button
-                    onClick={async () => {
-                      const name = prompt("Enter your name to enroll your face:", "Student");
-                      if (name) {
-                        const success = await enrollCurrentFace({ studentId: 'STU_' + Math.floor(Math.random()*10000), name: name, classId: 'Demo' });
-                        if (success) alert('Face enrolled successfully! Please look at the camera again to be identified.');
-                      }
-                    }}
-                    style={{
-                      padding: '8px 16px',
-                      borderRadius: '8px',
-                      border: '1px solid #10b981',
-                      background: 'rgba(16, 185, 129, 0.2)',
-                      color: '#34d399',
-                      fontSize: '12px',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    Enroll My Face
-                  </button>
-                </div>
-              )}
+                    }
+                  }}
+                  style={{ width: '100%', padding: '10px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  Proceed with ID
+                </button>
+              </div>
             </div>
           )}
 

@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Students Collection
+    match /students/{studentId} {
+      // Anyone (Kiosk) can read students for Face ID matching
+      allow read: if true;
+      // Only authenticated teachers can enroll/update students
+      allow write: if request.auth != null;
+    }
+
+    // Sessions Collection
+    match /sessions/{sessionId} {
+      // Kiosk can write session data anonymously
+      allow create: if true;
+      allow update: if true;
+      // Only authenticated teachers can read all sessions for analytics
+      allow read: if request.auth != null;
+    }
+    
+    // Classes Collection
+    match /classes/{classId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+  }
+}

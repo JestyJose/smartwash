@@ -53,19 +53,19 @@ export const WHO_STEPS = [
  * @param {string} studentName 
  * @returns {Session}
  */
-export function createDefaultSession(studentId, studentName) {
+export function createDefaultSession(studentId, studentName, identityMethod = 'face_recognition', classId = 'UNKNOWN') {
   return {
+    sessionId: `sess_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
     studentId,
     studentName,
+    classId,
     timestamp: new Date().toISOString(),
-    steps: WHO_STEPS.map(s => ({
-      stepNumber: s.stepNumber,
-      stepName: s.name,
-      completed: false,
-      durationMs: 0,
-      avgConfidence: 0.0
-    })),
-    score: 0,
+    completedSteps: [],
+    missedSteps: [],
+    outOfOrderSteps: [],
+    complianceScore: 0,
+    identityMethod,
+    sessionDurationSeconds: 0,
     status: 'in-progress'
   };
 }

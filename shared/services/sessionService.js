@@ -28,10 +28,11 @@ const mockSessionsStore = new Map();
  * Creates a new student handwashing session
  * @param {string} studentId 
  * @param {string} studentName 
+ * @param {string} identityMethod
  * @returns {Promise<{ id: string, session: import('../types.js').Session }>}
  */
-export async function createSession(studentId, studentName) {
-  const initialSession = createDefaultSession(studentId, studentName);
+export async function createSession(studentId, studentName, identityMethod = 'face_recognition') {
+  const initialSession = createDefaultSession(studentId, studentName, identityMethod);
   
   if (db && !isMockFirebase) {
     try {

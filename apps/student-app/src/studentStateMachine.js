@@ -11,7 +11,9 @@ export const KIOSK_STATES = {
   IDENTIFYING: 'identifying',
   WASHING: 'washing',
   SCORING: 'scoring',
-  FEEDBACK: 'feedback'
+  FEEDBACK: 'feedback',
+  UNKNOWN_STUDENT: 'unknown_student',
+  MULTIPLE_FACES: 'multiple_faces'
 };
 
 export const INITIAL_KIOSK_STATE = {
@@ -47,6 +49,18 @@ export function kioskReducer(state, action) {
         ...state,
         currentState: KIOSK_STATES.IDLE,
         error: action.payload?.error || 'Student not recognized. Please try again.'
+      };
+
+    case 'UNKNOWN_FACE_DETECTED':
+      return {
+        ...state,
+        currentState: KIOSK_STATES.UNKNOWN_STUDENT
+      };
+
+    case 'MULTIPLE_FACES_DETECTED':
+      return {
+        ...state,
+        currentState: KIOSK_STATES.MULTIPLE_FACES
       };
 
     case 'STEP_COMPLETED': {

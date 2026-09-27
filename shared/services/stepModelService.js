@@ -1,13 +1,10 @@
 /**
- * SMART WASH — WHO Handwashing Step Recognition & Inference Engine
+ * SMART WASH — WHO Handwashing Step Recognition Engine (YOLOv11 Integration)
  * Author: Jobiya (AI/Model Lead)
  * 
- * Manages rolling sequence buffer of hand landmarks, feature scaling,
- * majority-voting smoothing across last N frames, and WHO step transitions.
+ * Manages sequence buffer of YOLO classifications, majority-voting,
+ * temporal accumulation, and progression of WHO handwashing steps.
  */
-
-export const SEQUENCE_LENGTH = 30; // 30 frames window
-export const FEATURE_DIM = 63;     // 21 landmarks * 3 (x,y,z) coordinates
 
 export const WHO_STEPS_INFO = [
   { id: 0, name: "Wet Hands & Apply Soap", recommendedDurationMs: 5000 },
@@ -19,110 +16,154 @@ export const WHO_STEPS_INFO = [
   { id: 6, name: "Rotational Rubbing of Fingertips on Palms", recommendedDurationMs: 6000 }
 ];
 
-export function normalizeLandmarks(rawLandmarks) {
-  if (!rawLandmarks || rawLandmarks.length < FEATURE_DIM) {
-    return new Array(FEATURE_DIM).fill(0);
-  }
-
-  const wristX = rawLandmarks[0];
-  const wristY = rawLandmarks[1];
-  const wristZ = rawLandmarks[2];
-
-  // Middle finger MCP is at landmark index 9 (index 27 in 3D array)
-  const mcpX = rawLandmarks[27] - wristX;
-  const mcpY = rawLandmarks[28] - wristY;
-  const mcpZ = rawLandmarks[29] - wristZ;
-  
-  const scale = Math.sqrt(mcpX * mcpX + mcpY * mcpY + mcpZ * mcpZ) || 1.0;
-
-  const normalized = new Array(FEATURE_DIM);
-  for (let i = 0; i < FEATURE_DIM; i += 3) {
-    normalized[i] = (rawLandmarks[i] - wristX) / scale;
-    normalized[i + 1] = (rawLandmarks[i + 1] - wristY) / scale;
-    normalized[i + 2] = (rawLandmarks[i + 2] - wristZ) / scale;
-  }
-
-  return normalized;
-}
-
 export function calculateMajorityVote(predictionHistory) {
   if (!predictionHistory || predictionHistory.length === 0) {
-    return { majorityStep: 0, confidence: 0 };
+    return { majorityClass: "background", confidence: 0 };
   }
 
   const counts = {};
-  for (const step of predictionHistory) {
-    counts[step] = (counts[step] || 0) + 1;
+  for (const p of predictionHistory) {
+    counts[p] = (counts[p] || 0) + 1;
   }
 
-  let majorityStep = 0;
+  let majorityClass = "background";
   let maxCount = 0;
 
-  for (const [step, count] of Object.entries(counts)) {
+  for (const [cls, count] of Object.entries(counts)) {
     if (count > maxCount) {
       maxCount = count;
-      majorityStep = Number(step);
+      majorityClass = cls;
     }
   }
 
   const confidence = maxCount / predictionHistory.length;
-  return { majorityStep, confidence };
+  return { majorityClass, confidence };
 }
 
 export class StepRecognitionEngine {
   constructor(options = {}) {
     this.historyWindowSize = options.historyWindowSize || 15;
-    this.sequenceLength = options.sequenceLength || SEQUENCE_LENGTH;
-    this.confidenceThreshold = options.confidenceThreshold || 0.65;
+    this.confidenceThreshold = options.confidenceThreshold || 0.75;
+    this.consecutiveFramesRequired = options.consecutiveFramesRequired || 10;
+    this.stepTimeoutSeconds = options.stepTimeoutSeconds || 30;
     
-    this.frameBuffer = [];
     this.predictionHistory = [];
     this.currentStep = 1;
-    this.activeFramesCount = 0; // Frames where hands were detected
+    this.completedSteps = [];
+    this.missedSteps = [];
+    this.activeTimeMs = 0;
+    this.lastActiveTime = null;
+    this.stepStartTime = performance.now();
   }
 
-  pushFrame(rawLandmarks) {
-    const normalized = normalizeLandmarks(rawLandmarks);
-    this.frameBuffer.push(normalized);
-
-    if (this.frameBuffer.length > this.sequenceLength) {
-      this.frameBuffer.shift();
-    }
+  mapStepToYoloClass(stepId) {
+    // Return arrays of accepted granular YOLO classes per step
+    if (stepId === 1) return ["Step_1"];
+    if (stepId === 2) return ["Step_2_Left", "Step_2_Right"];
+    if (stepId === 3) return ["Step_3"];
+    if (stepId === 4) return ["Step_4_Left", "Step_4_Right", "Step_4"]; // Safely include base if exists
+    if (stepId === 5) return ["Step_5_Left", "Step_5_Right"];
+    if (stepId === 6) return ["Step_6_Left", "Step_6_Right", "Step_7_Left", "Step_7_Right"]; // Fallback for last steps
+    return ["background"];
   }
 
-  predict(handsDetected) {
-    if (handsDetected) {
-      this.activeFramesCount++;
+  getYoloClassStep(yoloClass) {
+    for (let i = 1; i <= 6; i++) {
+      if (this.mapStepToYoloClass(i).includes(yoloClass)) return i;
+    }
+    return -1;
+  }
+
+  predict(prediction, timestamp) {
+    const now = timestamp || performance.now();
+    
+    // Add to rolling history buffer
+    if (prediction.confidence >= this.confidenceThreshold) {
+      this.predictionHistory.push(prediction.class);
+    } else {
+      this.predictionHistory.push("background");
     }
 
-    // Progress step every 150 active frames (~5 seconds), cap at step 6
-    if (this.activeFramesCount >= 150 && this.currentStep < 6) {
-      this.activeFramesCount = 0;
-      this.currentStep++;
-      // Fill history with the new step to bypass majority voting lag immediately
-      this.predictionHistory = new Array(this.historyWindowSize).fill(this.currentStep);
-    }
-
-    this.predictionHistory.push(this.currentStep);
     if (this.predictionHistory.length > this.historyWindowSize) {
       this.predictionHistory.shift();
     }
 
-    const { majorityStep, confidence } = calculateMajorityVote(this.predictionHistory);
+    const { majorityClass, confidence } = calculateMajorityVote(this.predictionHistory);
+    const expectedClasses = this.mapStepToYoloClass(this.currentStep);
+    
+    // Check timeout
+    if ((now - this.stepStartTime) > this.stepTimeoutSeconds * 1000 && this.currentStep <= 6) {
+        this.missedSteps.push(this.currentStep);
+        this.currentStep++;
+        this.stepStartTime = now;
+        this.activeTimeMs = 0;
+        this.predictionHistory = new Array(this.historyWindowSize).fill(this.mapStepToYoloClass(this.currentStep)[0]);
+        return this._getOutput(confidence);
+    }
+    
+    // Sequence Violation Policy: check if step K+1 persists with high confidence
+    const detectedStep = this.getYoloClassStep(majorityClass);
+    if (detectedStep > this.currentStep) {
+        // High confidence streak for K+1
+        const streak = this.predictionHistory.filter(c => this.getYoloClassStep(c) === detectedStep).length;
+        if (streak >= this.consecutiveFramesRequired) {
+            // Mark step K as MISSED, advance to K+1
+            this.missedSteps.push(this.currentStep);
+            this.currentStep = detectedStep;
+            this.activeTimeMs = 0;
+            this.stepStartTime = now;
+            // Bypass majority lag
+            this.predictionHistory = new Array(this.historyWindowSize).fill(this.mapStepToYoloClass(this.currentStep)[0]);
+            return this._getOutput(confidence);
+        }
+    }
 
-    return {
-      rawStep: this.currentStep,
-      smoothedStep: majorityStep,
-      confidence: handsDetected ? Math.min(0.98, 0.85 + (this.activeFramesCount / 150) * 0.13) : 0.45,
-      bufferReady: this.frameBuffer.length >= this.sequenceLength,
-      progressPercent: Math.min(100, Math.round((this.activeFramesCount / 150) * 100))
-    };
+    // If the majority prediction matches our expected current step, accumulate time
+    if (expectedClasses.includes(majorityClass)) {
+      if (this.lastActiveTime) {
+        this.activeTimeMs += (now - this.lastActiveTime);
+      }
+      this.lastActiveTime = now;
+    } else {
+      this.lastActiveTime = null;
+    }
+
+    const targetMs = WHO_STEPS_INFO[this.currentStep]?.recommendedDurationMs || 6000;
+    
+    // Progress to next step if duration reached
+    if (this.activeTimeMs >= targetMs && this.currentStep <= 6) {
+      this.completedSteps.push(this.currentStep);
+      this.activeTimeMs = 0;
+      this.currentStep++;
+      this.stepStartTime = now;
+      if (this.currentStep <= 6) {
+          // Bypass majority lag immediately (fill with first accepted variant)
+          this.predictionHistory = new Array(this.historyWindowSize).fill(this.mapStepToYoloClass(this.currentStep)[0]);
+      }
+    }
+
+    return this._getOutput(confidence);
+  }
+  
+  _getOutput(confidence = 0) {
+      const targetMs = WHO_STEPS_INFO[this.currentStep]?.recommendedDurationMs || 6000;
+      return {
+          rawStep: this.currentStep,
+          smoothedStep: this.currentStep > 6 ? 6 : this.currentStep,
+          confidence: confidence,
+          progressPercent: Math.min(100, Math.round((this.activeTimeMs / targetMs) * 100)),
+          completedSteps: this.completedSteps,
+          missedSteps: this.missedSteps
+      };
   }
 
   reset() {
-    this.frameBuffer = [];
     this.predictionHistory = [];
     this.currentStep = 1;
-    this.activeFramesCount = 0;
+    this.completedSteps = [];
+    this.missedSteps = [];
+    this.activeTimeMs = 0;
+    this.lastActiveTime = null;
+    this.stepStartTime = performance.now();
   }
 }

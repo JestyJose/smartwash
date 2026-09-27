@@ -6,8 +6,9 @@
  * and high-performance Euclidean distance vector matching.
  */
 
-import { db, isMockFirebase } from '../firebaseConfig.js';
-import { collection, doc, setDoc, getDoc, getDocs, serverTimestamp } from 'firebase/firestore';
+import { db, storage, isMockFirebase } from '../firebaseConfig.js';
+import { collection, doc, setDoc, getDoc, getDocs, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 
 // Sample seed students with synthetic 128-d descriptors for testing/demonstration
 const SEED_STUDENTS = [
@@ -37,8 +38,29 @@ const SEED_STUDENTS = [
   }
 ];
 
-// In-memory store initialized with seed students
-const mockStudentsStore = new Map(SEED_STUDENTS.map(s => [s.studentId, s]));
+// In-memory store initialized with seed students and synced to localStorage
+const loadMockStudents = () => {
+  try {
+    const stored = localStorage.getItem('smartwash_mock_students');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      return new Map(parsed);
+    }
+  } catch (e) {
+    console.warn('Could not load mock students from localStorage', e);
+  }
+  return new Map(SEED_STUDENTS.map(s => [s.studentId, s]));
+};
+
+const mockStudentsStore = loadMockStudents();
+
+const saveMockStudents = () => {
+  try {
+    localStorage.setItem('smartwash_mock_students', JSON.stringify(Array.from(mockStudentsStore.entries())));
+  } catch (e) {
+    console.warn('Could not save mock students to localStorage', e);
+  }
+};
 
 /**
  * Calculates Euclidean distance between two 128-dimensional face feature vectors
@@ -92,8 +114,15 @@ export function matchFaceDescriptor(inputDescriptor, enrolledStudents = [], thre
 }
 
 /**
- * Enrolls a new student in Firestore / mock store
- * @param {import('../types.js').Student} studentData 
+ * Enrolls a new student in Firestore and optionally uploads a photo to Firebase Storage
+ * @param {Object} studentData 
+ * @param {string} [studentData.studentId]
+ * @param {string} [studentData.name]
+ * @param {string} [studentData.className]
+ * @param {string} [studentData.section]
+ * @param {string} [studentData.rollNumber]
+ * @param {number[]} [studentData.descriptor]
+ * @param {string} [studentData.photoBase64] - Data URL of the captured photo
  * @returns {Promise<boolean>}
  */
 export async function enrollStudent(studentData) {
@@ -101,25 +130,99 @@ export async function enrollStudent(studentData) {
     throw new Error('studentId and name are required for enrollment');
   }
 
-  const record = {
-    ...studentData,
-    createdAt: new Date().toISOString()
-  };
+  let photoUrl = studentData.photoUrl || '';
 
   if (db && !isMockFirebase) {
     try {
+      // 1. Upload photo if provided
+      if (studentData.photoBase64 && storage) {
+        const photoRef = ref(storage, `students/${studentData.studentId}/profile.jpg`);
+        await uploadString(photoRef, studentData.photoBase64, 'data_url');
+        photoUrl = await getDownloadURL(photoRef);
+      }
+
+      const record = {
+        studentId: studentData.studentId,
+        name: studentData.name,
+        className: studentData.className || '',
+        section: studentData.section || '',
+        rollNumber: studentData.rollNumber || '',
+        descriptor: studentData.descriptor || [],
+        photoUrl: photoUrl,
+        isActive: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
       const studentRef = doc(db, 'students', studentData.studentId);
-      await setDoc(studentRef, {
-        ...record,
-        createdAt: serverTimestamp()
-      });
+      await setDoc(studentRef, record);
       return true;
     } catch (err) {
-      console.warn('[studentService] Firestore setDoc failed:', err.message);
+      console.warn('[studentService] Firestore/Storage setDoc failed:', err.message);
     }
   }
 
+  // Mock Mode
+  const record = {
+    ...studentData,
+    photoUrl: studentData.photoBase64 || photoUrl, // Use base64 locally if mock
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
   mockStudentsStore.set(studentData.studentId, record);
+  saveMockStudents();
+  return true;
+}
+
+/**
+ * Updates an existing student's record (e.g. for re-enrollment)
+ * @param {string} studentId 
+ * @param {Object} updateData 
+ */
+export async function updateStudent(studentId, updateData) {
+  if (!studentId) throw new Error('studentId is required for update');
+
+  let photoUrl = updateData.photoUrl || '';
+
+  if (db && !isMockFirebase) {
+    try {
+      if (updateData.photoBase64 && storage) {
+        const photoRef = ref(storage, `students/${studentId}/profile.jpg`);
+        await uploadString(photoRef, updateData.photoBase64, 'data_url');
+        photoUrl = await getDownloadURL(photoRef);
+      }
+
+      const dataToUpdate = {
+        ...updateData,
+        updatedAt: serverTimestamp()
+      };
+      
+      if (photoUrl) {
+        dataToUpdate.photoUrl = photoUrl;
+      }
+      
+      delete dataToUpdate.photoBase64; // Don't save base64 string to Firestore
+
+      const studentRef = doc(db, 'students', studentId);
+      await updateDoc(studentRef, dataToUpdate);
+      return true;
+    } catch (err) {
+      console.warn('[studentService] Firestore updateDoc failed:', err.message);
+    }
+  }
+
+  // Mock mode
+  const existing = mockStudentsStore.get(studentId) || {};
+  const updated = {
+    ...existing,
+    ...updateData,
+    photoUrl: updateData.photoBase64 || photoUrl || existing.photoUrl,
+    updatedAt: new Date().toISOString()
+  };
+  delete updated.photoBase64;
+  mockStudentsStore.set(studentId, updated);
+  saveMockStudents();
   return true;
 }
 

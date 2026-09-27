@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+websockets
+torch
+torchvision
+ultralytics
+opencv-python

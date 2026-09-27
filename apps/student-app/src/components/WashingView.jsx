@@ -13,12 +13,36 @@ export function WashingView({
   const onStepCompleteRef = React.useRef(onStepComplete);
   const onFinishWashingRef = React.useRef(onFinishWashing);
   const confidenceRef = React.useRef(confidence);
+  const [mediaFailed, setMediaFailed] = useState(false);
 
   React.useEffect(() => {
     onStepCompleteRef.current = onStepComplete;
     onFinishWashingRef.current = onFinishWashing;
     confidenceRef.current = confidence;
   });
+
+  // Synchronized Multimedia Guidance (Voice Assistant & Video Loop)
+  React.useEffect(() => {
+    setMediaFailed(false);
+    
+    // Voice Assistant (SpeechSynthesis API fallback/primary)
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // Terminate previous audio streams
+      const utterance = new SpeechSynthesisUtterance(`Step ${activeStep}: ${currentStepInfo.name}`);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.1;
+      
+      try {
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn('[WashingView] Voice assistant failed to play:', err);
+      }
+    }
+
+    return () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    };
+  }, [activeStep, currentStepInfo.name]);
 
   const progressPercent = Math.min(100, Math.max(0, progress));
 
@@ -30,6 +54,30 @@ export function WashingView({
       justifyContent: 'space-between',
       gap: '20px'
     }}>
+      {/* Multimedia Instruction Panel */}
+      {!mediaFailed && (
+        <div style={{ 
+          width: '100%', height: '180px', background: '#000', borderRadius: '18px', overflow: 'hidden', position: 'relative', border: '1px solid rgba(255,255,255,0.1)'
+        }}>
+          <video 
+            key={`vid-step-${activeStep}`}
+            src={`/assets/step_${activeStep}.mp4`} 
+            autoPlay 
+            loop 
+            muted 
+            playsInline
+            onError={() => {
+              console.warn(`[WashingView] Graceful degradation: Video asset /assets/step_${activeStep}.mp4 not found.`);
+              setMediaFailed(true);
+            }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+          <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(0,0,0,0.6)', padding: '4px 8px', borderRadius: '6px', fontSize: '11px', color: '#fff' }}>
+            ▶ Live Demonstration
+          </div>
+        </div>
+      )}
+
       {/* Active Step Banner */}
       <div style={{
         background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.9))',

@@ -1,13 +1,12 @@
 /**
- * SMART WASH — React Hook for MediaPipe & TF.js WHO Step Recognition
+ * SMART WASH — React Hook for YOLOv11 WHO Step Recognition (WebSocket Client)
  * Author: Jobiya (AI/Model Lead)
  * 
- * Streams webcam frames, extracts 21 3D hand landmarks via MediaPipe Vision,
- * feeds sequences into StepRecognitionEngine, and returns active step & progress.
+ * Streams webcam frames, downscales them to 320x320, sends them to FastAPI via WS,
+ * feeds results into StepRecognitionEngine, and returns active step & progress.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { StepRecognitionEngine, WHO_STEPS_INFO } from '../services/stepModelService.js';
 
 export function useStepRecognition({
@@ -24,51 +23,43 @@ export function useStepRecognition({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isHandsMoving, setIsHandsMoving] = useState(false);
   const [completedSteps, setCompletedSteps] = useState([]);
+  const [missedSteps, setMissedSteps] = useState([]);
+  
+  // Reconnect backoff state
+  const reconnectAttempts = useRef(0);
+  
+  // Telemetry HUD State
+  const [telemetry, setTelemetry] = useState({
+    camActive: false,
+    leftHand: false,
+    rightHand: false,
+    rawPrediction: 'None',
+    rawConfidence: 0,
+    expectedStep: 'Step 1',
+    debounceCount: 0,
+    requiredFrames: 10
+  });
 
   const engineRef = useRef(null);
-  const animFrameRef = useRef(null);
-  const handLandmarkerRef = useRef(null);
-  const lastVideoTimeRef = useRef(-1);
-  const isHandsMovingRef = useRef(false);
-  const lastLandmarksRef = useRef(null);
-
+  const wsRef = useRef(null);
+  const intervalRef = useRef(null);
+  const canvasRef = useRef(null);
+  const ctxRef = useRef(null);
+  
+  const lastStepTimeRef = useRef(performance.now());
   const onStepCompletedRef = useRef(onStepCompleted);
 
   useEffect(() => {
     onStepCompletedRef.current = onStepCompleted;
   });
 
-  // Initialize MediaPipe HandLandmarker
+  // Initialize Canvas for downscaling
   useEffect(() => {
-    let active = true;
-    const initMediaPipe = async () => {
-      try {
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-        );
-        const landmarker = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          numHands: 2
-        });
-        if (active) {
-          handLandmarkerRef.current = landmarker;
-        }
-      } catch (err) {
-        console.error("[useStepRecognition] Error initializing MediaPipe:", err);
-      }
-    };
-    initMediaPipe();
-
-    return () => {
-      active = false;
-      if (handLandmarkerRef.current) {
-        handLandmarkerRef.current.close();
-      }
-    };
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 320;
+    canvasRef.current = canvas;
+    ctxRef.current = canvas.getContext('2d', { willReadFrequently: true });
   }, []);
 
   // Initialize StepRecognitionEngine
@@ -77,107 +68,144 @@ export function useStepRecognition({
       useMock,
       confidenceThreshold
     });
-
-    return () => {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-      }
-    };
   }, [useMock, confidenceThreshold]);
 
-  // MediaPipe analysis loop
-  const processFrame = useCallback(() => {
-    if (!enabled || !engineRef.current || !handLandmarkerRef.current) return;
-
-    try {
-      const video = videoRef?.current;
-      if (video && !video.paused && !video.ended && video.readyState >= 2) {
-        // Only run detection if the video frame has advanced
-        if (video.currentTime !== lastVideoTimeRef.current) {
-          lastVideoTimeRef.current = video.currentTime;
-          
-          const startTimeMs = performance.now();
-          const results = handLandmarkerRef.current.detectForVideo(video, startTimeMs);
-          
-          let isMoving = false;
-          if (results.landmarks && results.landmarks.length > 0) {
-            // Get the first hand detected
-            const hand = results.landmarks[0];
-            
-            // Format into 63-element array
-            const flatLandmarks = new Array(63);
-            for (let i = 0; i < 21; i++) {
-              flatLandmarks[i * 3] = hand[i].x;
-              flatLandmarks[i * 3 + 1] = hand[i].y;
-              flatLandmarks[i * 3 + 2] = hand[i].z;
-            }
-            
-            engineRef.current.pushFrame(flatLandmarks);
-
-            // Check if hands are actually moving to avoid advancing when hands are just held still
-            if (lastLandmarksRef.current) {
-              let diffSum = 0;
-              // Check movement of Wrist (0), Index Tip (8), and Middle Tip (12)
-              const pointsToCheck = [0, 8, 12];
-              for (const pt of pointsToCheck) {
-                const idx = pt * 3;
-                diffSum += Math.abs(flatLandmarks[idx] - lastLandmarksRef.current[idx]) + 
-                           Math.abs(flatLandmarks[idx+1] - lastLandmarksRef.current[idx+1]);
-              }
-              
-              // diffSum is the total movement across those 3 points (x and y).
-              // Natural camera jitter is around ~0.01. Intentional washing is > 0.04.
-              if (diffSum > 0.03) {
-                isMoving = true;
-              }
-            } else {
-              isMoving = true; // First frame detected is considered moving
-            }
-
-            lastLandmarksRef.current = flatLandmarks;
-          } else {
-            lastLandmarksRef.current = null;
-          }
-
-          if (isMoving !== isHandsMovingRef.current) {
-             isHandsMovingRef.current = isMoving;
-             setIsHandsMoving(isMoving);
-          }
-        }
+  // WebSocket Connection
+  useEffect(() => {
+    if (!enabled) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
-
-      const result = engineRef.current.predict(isHandsMovingRef.current);
-      setActiveStep(result.smoothedStep);
-      setStepName(WHO_STEPS_INFO[result.smoothedStep]?.name || 'Unknown');
-      
-      const currentConf = isHandsMovingRef.current ? Math.max(0.85, result.confidence) : 0.45;
-      setConfidence(currentConf);
-      setProgress(result.progressPercent);
-    } catch (err) {
-      console.warn('[useStepRecognition] Video analysis frame error:', err.message);
+      setIsProcessing(false);
+      return;
     }
 
-    if (enabled) {
-      animFrameRef.current = requestAnimationFrame(processFrame);
+    const connectWebSocket = () => {
+      const ws = new WebSocket('ws://localhost:4550/ws_model');
+      
+      ws.onopen = () => {
+        console.log('[useStepRecognition] WebSocket Connected');
+        setIsProcessing(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.prediction && engineRef.current) {
+            handlePrediction(data.prediction, data.timestamp);
+          }
+        } catch (err) {
+          console.error('[useStepRecognition] Error parsing WS message:', err);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('[useStepRecognition] WebSocket Error:', err);
+      };
+
+      ws.onclose = () => {
+        console.log('[useStepRecognition] WebSocket Disconnected. Reconnecting...');
+        setIsProcessing(false);
+        if (enabled) {
+          reconnectAttempts.current += 1;
+          const backoff = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts.current));
+          setTimeout(connectWebSocket, backoff);
+        }
+      };
+
+      wsRef.current = ws;
+    };
+
+    reconnectAttempts.current = 0;
+    connectWebSocket();
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [enabled]);
+
+  const handlePrediction = useCallback((prediction, timestamp) => {
+    if (!engineRef.current) return;
+    
+    // We expect prediction format: { class: "Step X", confidence: 0.85 }
+    // Pass it to our state machine engine
+    const isMoving = prediction.class !== "background" && prediction.confidence > 0.4;
+    setIsHandsMoving(isMoving);
+
+    // [HANDWASH_DEBUG] format
+    const expected = engineRef.current.mapStepToYoloClass(activeStep);
+    const expectedString = expected.join(' or ');
+    const frameStreak = engineRef.current.predictionHistory.filter(x => expected.includes(x)).length;
+    console.log(`[HANDWASH_DEBUG] target: ${expectedString} | raw_pred: ${prediction.class} | conf: ${prediction.confidence.toFixed(2)} | hands_visible: L:YES R:YES | frame_streak: ${frameStreak}/${engineRef.current.historyWindowSize}`);
+
+    setTelemetry(prev => ({
+      ...prev,
+      rawPrediction: prediction.class,
+      rawConfidence: prediction.confidence,
+      expectedStep: expectedString,
+      debounceCount: frameStreak,
+      requiredFrames: engineRef.current.historyWindowSize
+    }));
+
+    const result = engineRef.current.predict(prediction, timestamp);
+    
+    if (result.smoothedStep > activeStep) {
+      const duration = performance.now() - lastStepTimeRef.current;
+      lastStepTimeRef.current = performance.now();
+      if (onStepCompletedRef.current) {
+        onStepCompletedRef.current({
+          stepNumber: activeStep,
+          durationMs: duration,
+          avgConfidence: confidence,
+          completed: true
+        });
+      }
+      setCompletedSteps(prev => [...prev, activeStep]);
+    }
+
+    setActiveStep(result.smoothedStep);
+    setStepName(WHO_STEPS_INFO[result.smoothedStep]?.name || 'Unknown');
+    setConfidence(result.confidence);
+    setProgress(result.progressPercent);
+    if (result.completedSteps) setCompletedSteps(result.completedSteps);
+    if (result.missedSteps) setMissedSteps(result.missedSteps);
+  }, [activeStep, confidence]);
+
+  // Frame Capture Loop
+  const sendFrame = useCallback(() => {
+    if (!enabled || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    
+    const video = videoRef?.current;
+    if (video && !video.paused && !video.ended && video.readyState >= 2) {
+      setTelemetry(prev => ({ ...prev, camActive: true }));
+      // Draw to offscreen canvas
+      ctxRef.current.drawImage(video, 0, 0, 320, 320);
+      
+      // Get Base64 JPEG (lower quality for performance)
+      const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.6);
+      
+      // Send over WebSocket
+      wsRef.current.send(dataUrl);
     }
   }, [enabled, videoRef]);
 
+  // Set up interval for ~10fps transmission
   useEffect(() => {
     if (enabled) {
-      setIsProcessing(true);
-      animFrameRef.current = requestAnimationFrame(processFrame);
+      intervalRef.current = setInterval(sendFrame, 100);
     } else {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
       }
-      setIsProcessing(false);
     }
     return () => {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-      }
+      if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [enabled, processFrame]);
+  }, [enabled, sendFrame]);
 
   const resetTracker = useCallback(() => {
     if (engineRef.current) {
@@ -188,8 +216,8 @@ export function useStepRecognition({
     setConfidence(0.88);
     setProgress(0);
     setCompletedSteps([]);
-    lastVideoTimeRef.current = -1;
-    lastLandmarksRef.current = null;
+    setMissedSteps([]);
+    lastStepTimeRef.current = performance.now();
   }, []);
 
   return {
@@ -200,7 +228,9 @@ export function useStepRecognition({
     isProcessing,
     isHandsMoving,
     completedSteps,
+    missedSteps,
     resetTracker,
-    stepsInfo: WHO_STEPS_INFO
+    stepsInfo: WHO_STEPS_INFO,
+    telemetry
   };
 }
