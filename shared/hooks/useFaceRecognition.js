@@ -87,7 +87,23 @@ export function useFaceRecognition({
           .withFaceDescriptors();
 
         if (detections && detections.length > 0) {
-          if (detections.length > 1) {
+          // Sort by face bounding box area (largest face = student closest in front of camera)
+          const sorted = [...detections].sort((a, b) => {
+            const areaA = (a.detection?.box?.width || 0) * (a.detection?.box?.height || 0);
+            const areaB = (b.detection?.box?.width || 0) * (b.detection?.box?.height || 0);
+            return areaB - areaA;
+          });
+
+          const primaryFace = sorted[0];
+          const primaryArea = (primaryFace.detection?.box?.width || 0) * (primaryFace.detection?.box?.height || 0);
+
+          // Only flag MULTIPLE_FACES if two students are crowding side-by-side right in front of the sink
+          // (i.e. second face is nearly as large as the primary face, > 75% of primary area and large in absolute terms)
+          const secondFace = sorted[1];
+          const secondArea = secondFace ? (secondFace.detection?.box?.width || 0) * (secondFace.detection?.box?.height || 0) : 0;
+          const isCrowdedInFront = sorted.length > 1 && secondArea > 15000 && secondArea >= primaryArea * 0.75;
+
+          if (isCrowdedInFront) {
             setMultipleFacesDetected(true);
             setUnknownFaceDetected(false);
             setDetectedDescriptor(null);
@@ -96,8 +112,9 @@ export function useFaceRecognition({
             setConfidence(0);
             consecutiveMatchesRef.current = [];
           } else {
+            // Focus on the primary person in front
             setMultipleFacesDetected(false);
-            const descriptor = Array.from(detections[0].descriptor);
+            const descriptor = Array.from(primaryFace.descriptor);
             setDetectedDescriptor(descriptor);
             
             const match = matchFaceDescriptor(descriptor, enrolledStudents, distanceThreshold);

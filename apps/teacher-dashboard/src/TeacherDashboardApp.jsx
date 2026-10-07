@@ -7,9 +7,14 @@ import { StudentEnrollmentForm } from './components/StudentEnrollmentForm.jsx';
 import { StudentProfile } from './components/StudentProfile.jsx';
 import { getAllStudents } from '../../../shared/services/studentService.js';
 import { getAllSessions } from '../../../shared/services/sessionService.js';
+import { calculateStreak } from '../../../shared/services/scoringService.js';
 import { isMockFirebase } from '../../../shared/firebaseConfig.js';
 
 function OverviewDashboard({ students, sessions, searchTerm, setSearchTerm, avgClassScore, filteredStudents }) {
+  const complianceRate = sessions.length > 0 
+    ? Math.round((sessions.filter(s => (s.complianceScore ?? s.score ?? 0) >= 70).length / sessions.length) * 100) 
+    : 100;
+
   return (
     <>
       {/* Overview Stat Cards */}
@@ -17,25 +22,25 @@ function OverviewDashboard({ students, sessions, searchTerm, setSearchTerm, avgC
         <div style={{ background: 'rgba(30, 41, 59, 0.4)', borderRadius: '16px', padding: '20px', border: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700 }}>Class Average Score</div>
           <div style={{ fontSize: '36px', fontWeight: 800, color: '#34d399', margin: '4px 0' }}>{avgClassScore}</div>
-          <div style={{ fontSize: '11px', color: '#34d399' }}>+4% from last week</div>
+          <div style={{ fontSize: '11px', color: '#34d399' }}>Real-time student average</div>
         </div>
 
         <div style={{ background: 'rgba(30, 41, 59, 0.4)', borderRadius: '16px', padding: '20px', border: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700 }}>Active Students</div>
-          <div style={{ fontSize: '36px', fontWeight: 800, color: '#60a5fa', margin: '4px 0' }}>{students.length || 5}</div>
-          <div style={{ fontSize: '11px', color: '#94a3b8' }}>100% face enrolled</div>
+          <div style={{ fontSize: '36px', fontWeight: 800, color: '#60a5fa', margin: '4px 0' }}>{students.length}</div>
+          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Enrolled student roster</div>
         </div>
 
         <div style={{ background: 'rgba(30, 41, 59, 0.4)', borderRadius: '16px', padding: '20px', border: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700 }}>Compliance Rate</div>
-          <div style={{ fontSize: '36px', fontWeight: 800, color: '#c084fc', margin: '4px 0' }}>96%</div>
+          <div style={{ fontSize: '36px', fontWeight: 800, color: '#c084fc', margin: '4px 0' }}>{complianceRate}%</div>
           <div style={{ fontSize: '11px', color: '#c084fc' }}>WHO Step compliance</div>
         </div>
 
         <div style={{ background: 'rgba(30, 41, 59, 0.4)', borderRadius: '16px', padding: '20px', border: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700 }}>Total Sessions</div>
-          <div style={{ fontSize: '36px', fontWeight: 800, color: '#fbbf24', margin: '4px 0' }}>{sessions.length + 42}</div>
-          <div style={{ fontSize: '11px', color: '#fbbf24' }}>Tracked today</div>
+          <div style={{ fontSize: '36px', fontWeight: 800, color: '#fbbf24', margin: '4px 0' }}>{sessions.length}</div>
+          <div style={{ fontSize: '11px', color: '#fbbf24' }}>Logged sessions</div>
         </div>
       </div>
 
@@ -60,15 +65,18 @@ export function TeacherDashboardApp() {
     const studentList = await getAllStudents();
     const sessionList = await getAllSessions();
     
-    // Calculate scores for students based on recent sessions
+    // Calculate scores and streaks for students based on actual session history
     const studentMap = studentList.map(st => {
       const studentSessions = sessionList.filter(s => s.studentId === st.studentId);
       const latestSession = studentSessions[0];
+      const actualScore = latestSession ? (latestSession.complianceScore ?? latestSession.score ?? 85) : 85;
+      const streak = calculateStreak(studentSessions);
+      const grade = actualScore >= 90 ? 'Excellent' : actualScore >= 75 ? 'Good' : 'Satisfactory';
       return {
         ...st,
-        score: latestSession ? latestSession.score : Math.floor(80 + Math.random() * 18),
-        streak: Math.floor(2 + Math.random() * 6),
-        grade: 'Excellent'
+        score: actualScore,
+        streak: streak,
+        grade: grade
       };
     });
 

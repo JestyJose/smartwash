@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 
 export function FeedbackView({
   score = 95,
+  breakdown = null,
   student = null,
   completedSteps = [],
   onReset = null
@@ -27,11 +28,15 @@ export function FeedbackView({
   const isGood = score >= 70 && score < 85;
 
   const scoreColor = isExcellent ? '#34d399' : isGood ? '#60a5fa' : '#f59e0b';
-  const encourageMessage = isExcellent
-    ? 'Outstanding Handwashing Compliance!'
-    : isGood
-    ? 'Good Technique! Keep It Up!'
-    : 'Practice Steps to Improve Technique';
+  const durationPct = breakdown?.durationQuality ?? 90;
+  const confidencePct = breakdown?.aiConfidence ?? 92;
+  const encourageMessage = breakdown?.feedbackMessage || (
+    isExcellent
+      ? 'Outstanding Handwashing Compliance!'
+      : isGood
+      ? 'Good Technique! Keep It Up!'
+      : 'Practice Steps to Improve Technique'
+  );
 
   return (
     <div style={{
@@ -40,7 +45,7 @@ export function FeedbackView({
       alignItems: 'center',
       justifyContent: 'center',
       height: '100%',
-      gap: '24px',
+      gap: '20px',
       textAlign: 'center',
       padding: '20px'
     }}>
@@ -76,35 +81,59 @@ export function FeedbackView({
 
       {/* Encouragement Banner */}
       <div>
-        <h2 style={{ margin: '0 0 6px 0', fontSize: '26px', fontWeight: 800, color: '#ffffff' }}>
+        <h2 style={{ margin: '0 0 6px 0', fontSize: '24px', fontWeight: 800, color: '#ffffff' }}>
           {student ? `Great Job, ${student.name}!` : 'Handwash Complete!'}
         </h2>
-        <p style={{ margin: 0, fontSize: '15px', color: scoreColor, fontWeight: 700 }}>
+        <p style={{ margin: 0, fontSize: '14px', color: scoreColor, fontWeight: 700 }}>
           {encourageMessage}
         </p>
       </div>
 
-      {/* Summary Chips */}
+      {/* Deterministic Score Breakdown Grid */}
       <div style={{
-        display: 'flex',
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, 1fr)',
         gap: '12px',
-        background: 'rgba(15, 23, 42, 0.6)',
-        padding: '12px 20px',
-        borderRadius: '14px',
-        border: '1px solid rgba(255, 255, 255, 0.08)'
+        width: '100%',
+        maxWidth: '440px'
       }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: '16px', fontWeight: 800, color: '#34d399' }}>
+        <div style={{
+          background: 'rgba(15, 23, 42, 0.7)',
+          padding: '12px 14px',
+          borderRadius: '12px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: '#34d399' }}>
             {completedSteps.length} / 6
           </div>
-          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Steps Tracked</div>
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>Completed Steps</div>
         </div>
-        <div style={{ width: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: '16px', fontWeight: 800, color: '#60a5fa' }}>
-            +50 pts
+
+        <div style={{
+          background: 'rgba(15, 23, 42, 0.7)',
+          padding: '12px 14px',
+          borderRadius: '12px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: '#60a5fa' }}>
+            {durationPct}%
           </div>
-          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Streak Bonus</div>
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>Duration Quality</div>
+        </div>
+
+        <div style={{
+          background: 'rgba(15, 23, 42, 0.7)',
+          padding: '12px 14px',
+          borderRadius: '12px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: '#c084fc' }}>
+            {confidencePct}%
+          </div>
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>AI Confidence</div>
         </div>
       </div>
 

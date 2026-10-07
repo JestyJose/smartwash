@@ -91,7 +91,8 @@ export function kioskReducer(state, action) {
         ...state,
         currentState: KIOSK_STATES.FEEDBACK,
         finalScore: action.payload.score,
-        completedSteps: action.payload.steps || state.completedSteps
+        completedSteps: action.payload.steps || state.completedSteps,
+        scoreBreakdown: action.payload.scoreBreakdown || null
       };
 
     case 'RESET_TO_IDLE':

@@ -4,3 +4,11 @@ dist
 *.log
 .env
 .env.local
+kaggle.tar
+*.tar
+*.zip
+backend/venv
+backend/__pycache__
+__pycache__
+scratch
+

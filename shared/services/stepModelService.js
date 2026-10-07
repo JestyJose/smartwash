@@ -42,28 +42,29 @@ export function calculateMajorityVote(predictionHistory) {
 
 export class StepRecognitionEngine {
   constructor(options = {}) {
-    this.historyWindowSize = options.historyWindowSize || 15;
-    this.confidenceThreshold = options.confidenceThreshold || 0.75;
-    this.consecutiveFramesRequired = options.consecutiveFramesRequired || 10;
+    this.historyWindowSize = options.historyWindowSize || 12;
+    this.confidenceThreshold = options.confidenceThreshold !== undefined ? options.confidenceThreshold : 0.28;
+    this.consecutiveFramesRequired = options.consecutiveFramesRequired || 6;
     this.stepTimeoutSeconds = options.stepTimeoutSeconds || 30;
+    this.useMock = !!options.useMock;
     
     this.predictionHistory = [];
     this.currentStep = 1;
     this.completedSteps = [];
     this.missedSteps = [];
     this.activeTimeMs = 0;
-    this.lastActiveTime = null;
+    this.lastFrameTime = null;
     this.stepStartTime = performance.now();
   }
 
   mapStepToYoloClass(stepId) {
     // Return arrays of accepted granular YOLO classes per step
     if (stepId === 1) return ["Step_1"];
-    if (stepId === 2) return ["Step_2_Left", "Step_2_Right"];
+    if (stepId === 2) return ["Step_2_Left", "Step_2_Right", "Step_2"];
     if (stepId === 3) return ["Step_3"];
-    if (stepId === 4) return ["Step_4_Left", "Step_4_Right", "Step_4"]; // Safely include base if exists
-    if (stepId === 5) return ["Step_5_Left", "Step_5_Right"];
-    if (stepId === 6) return ["Step_6_Left", "Step_6_Right", "Step_7_Left", "Step_7_Right"]; // Fallback for last steps
+    if (stepId === 4) return ["Step_4_Left", "Step_4_Right", "Step_4"];
+    if (stepId === 5) return ["Step_5_Left", "Step_5_Right", "Step_5"];
+    if (stepId === 6) return ["Step_6_Left", "Step_6_Right", "Step_6", "Step_7_Left", "Step_7_Right", "Step_7"];
     return ["background"];
   }
 
@@ -76,9 +77,11 @@ export class StepRecognitionEngine {
 
   predict(prediction, timestamp) {
     const now = timestamp || performance.now();
+    const delta = this.lastFrameTime ? Math.min(400, Math.max(50, now - this.lastFrameTime)) : 100;
+    this.lastFrameTime = now;
     
     // Add to rolling history buffer
-    if (prediction.confidence >= this.confidenceThreshold) {
+    if (prediction && prediction.class && prediction.class !== 'background' && (prediction.confidence || 0) >= this.confidenceThreshold) {
       this.predictionHistory.push(prediction.class);
     } else {
       this.predictionHistory.push("background");
@@ -97,35 +100,32 @@ export class StepRecognitionEngine {
         this.currentStep++;
         this.stepStartTime = now;
         this.activeTimeMs = 0;
-        this.predictionHistory = new Array(this.historyWindowSize).fill(this.mapStepToYoloClass(this.currentStep)[0]);
+        this.predictionHistory = [];
         return this._getOutput(confidence);
     }
     
     // Sequence Violation Policy: check if step K+1 persists with high confidence
     const detectedStep = this.getYoloClassStep(majorityClass);
-    if (detectedStep > this.currentStep) {
-        // High confidence streak for K+1
+    if (detectedStep > this.currentStep && detectedStep <= 6) {
         const streak = this.predictionHistory.filter(c => this.getYoloClassStep(c) === detectedStep).length;
         if (streak >= this.consecutiveFramesRequired) {
-            // Mark step K as MISSED, advance to K+1
+            // Mark step K as MISSED, advance to detectedStep
             this.missedSteps.push(this.currentStep);
             this.currentStep = detectedStep;
             this.activeTimeMs = 0;
             this.stepStartTime = now;
-            // Bypass majority lag
-            this.predictionHistory = new Array(this.historyWindowSize).fill(this.mapStepToYoloClass(this.currentStep)[0]);
+            this.predictionHistory = [];
             return this._getOutput(confidence);
         }
     }
 
-    // If the majority prediction matches our expected current step, accumulate time
-    if (expectedClasses.includes(majorityClass)) {
-      if (this.lastActiveTime) {
-        this.activeTimeMs += (now - this.lastActiveTime);
-      }
-      this.lastActiveTime = now;
-    } else {
-      this.lastActiveTime = null;
+    // Check if the current prediction or majority matches our expected current step
+    const matchesCurrent = expectedClasses.includes(majorityClass) ||
+      (expectedClasses.includes(prediction.class) && (prediction.confidence || 0) >= this.confidenceThreshold) ||
+      (prediction.step === `Step_${this.currentStep}`);
+
+    if (matchesCurrent && this.currentStep <= 6) {
+      this.activeTimeMs += delta;
     }
 
     const targetMs = WHO_STEPS_INFO[this.currentStep]?.recommendedDurationMs || 6000;
@@ -136,24 +136,26 @@ export class StepRecognitionEngine {
       this.activeTimeMs = 0;
       this.currentStep++;
       this.stepStartTime = now;
-      if (this.currentStep <= 6) {
-          // Bypass majority lag immediately (fill with first accepted variant)
-          this.predictionHistory = new Array(this.historyWindowSize).fill(this.mapStepToYoloClass(this.currentStep)[0]);
-      }
+      this.predictionHistory = [];
     }
 
     return this._getOutput(confidence);
   }
   
   _getOutput(confidence = 0) {
-      const targetMs = WHO_STEPS_INFO[this.currentStep]?.recommendedDurationMs || 6000;
+      const stepIndex = Math.min(6, Math.max(1, this.currentStep));
+      const targetMs = WHO_STEPS_INFO[stepIndex]?.recommendedDurationMs || 6000;
+      const isCompleted = this.currentStep > 6 || this.completedSteps.length >= 6 || this.completedSteps.includes(6);
       return {
           rawStep: this.currentStep,
-          smoothedStep: this.currentStep > 6 ? 6 : this.currentStep,
-          confidence: confidence,
-          progressPercent: Math.min(100, Math.round((this.activeTimeMs / targetMs) * 100)),
-          completedSteps: this.completedSteps,
-          missedSteps: this.missedSteps
+          smoothedStep: isCompleted ? 6 : stepIndex,
+          confidence: Number((confidence || 0).toFixed(2)),
+          progressPercent: isCompleted ? 100 : Math.min(100, Math.round((this.activeTimeMs / targetMs) * 100)),
+          completedSteps: [...this.completedSteps],
+          missedSteps: [...this.missedSteps],
+          isCompleted: isCompleted,
+          activeTimeMs: this.activeTimeMs,
+          targetTimeMs: targetMs
       };
   }
 
@@ -163,7 +165,7 @@ export class StepRecognitionEngine {
     this.completedSteps = [];
     this.missedSteps = [];
     this.activeTimeMs = 0;
-    this.lastActiveTime = null;
+    this.lastFrameTime = null;
     this.stepStartTime = performance.now();
   }
 }

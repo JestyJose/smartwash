@@ -21,8 +21,87 @@ import {
 } from 'firebase/firestore';
 import { createDefaultSession, validateSessionContract } from '../types.js';
 
-// In-memory storage for mock environment / offline testing
-const mockSessionsStore = new Map();
+// Persistent local storage for mock environment / offline testing
+const STORAGE_KEY = 'smartwash_mock_sessions';
+
+const SEED_SESSIONS = [
+  {
+    id: 'mock_sess_101',
+    sessionId: 'mock_sess_101',
+    studentId: 'STU_101',
+    studentName: 'Alex River',
+    classId: 'Grade 5-A',
+    timestamp: new Date(Date.now() - 3600000 * 2).toISOString(),
+    completedSteps: [1, 2, 3, 4, 5, 6],
+    missedSteps: [],
+    complianceScore: 95,
+    score: 95,
+    identityMethod: 'face_recognition',
+    status: 'completed',
+    durationQuality: 92,
+    aiConfidence: 94
+  },
+  {
+    id: 'mock_sess_102',
+    sessionId: 'mock_sess_102',
+    studentId: 'STU_102',
+    studentName: 'Jordan Taylor',
+    classId: 'Grade 5-A',
+    timestamp: new Date(Date.now() - 3600000 * 4).toISOString(),
+    completedSteps: [1, 2, 3, 4, 5],
+    missedSteps: [6],
+    complianceScore: 82,
+    score: 82,
+    identityMethod: 'face_recognition',
+    status: 'completed',
+    durationQuality: 88,
+    aiConfidence: 91
+  },
+  {
+    id: 'mock_sess_103',
+    sessionId: 'mock_sess_103',
+    studentId: 'STU_103',
+    studentName: 'Sam Chen',
+    classId: 'Grade 5-B',
+    timestamp: new Date(Date.now() - 3600000 * 6).toISOString(),
+    completedSteps: [1, 2, 3, 4, 5, 6],
+    missedSteps: [],
+    complianceScore: 98,
+    score: 98,
+    identityMethod: 'face_recognition',
+    status: 'completed',
+    durationQuality: 96,
+    aiConfidence: 95
+  }
+];
+
+function loadMockSessions() {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return new Map(parsed.map(s => [s.id || s.sessionId, s]));
+      }
+    }
+  } catch (e) {
+    console.warn('[sessionService] Could not load sessions from localStorage', e);
+  }
+  return new Map(SEED_SESSIONS.map(s => [s.id, s]));
+}
+
+const mockSessionsStore = loadMockSessions();
+
+function saveMockSessions() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const arr = Array.from(mockSessionsStore.values());
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+    }
+  } catch (e) {
+    console.warn('[sessionService] Could not save sessions to localStorage', e);
+  }
+}
 
 /**
  * Creates a new student handwashing session
@@ -48,8 +127,9 @@ export async function createSession(studentId, studentName, identityMethod = 'fa
 
   // Mock / Fallback Mode
   const mockId = `mock_session_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-  const createdSession = { ...initialSession, id: mockId };
+  const createdSession = { ...initialSession, id: mockId, sessionId: mockId };
   mockSessionsStore.set(mockId, createdSession);
+  saveMockSessions();
   return { id: mockId, session: createdSession };
 }
 
@@ -80,10 +160,13 @@ export async function updateSession(sessionId, updateData) {
   const updated = {
     ...existing,
     ...updateData,
+    score: updateData.score !== undefined ? updateData.score : (updateData.complianceScore !== undefined ? updateData.complianceScore : existing.score),
+    complianceScore: updateData.complianceScore !== undefined ? updateData.complianceScore : (updateData.score !== undefined ? updateData.score : existing.complianceScore),
     id: sessionId,
     updatedAt: new Date().toISOString()
   };
   mockSessionsStore.set(sessionId, updated);
+  saveMockSessions();
   return true;
 }
 
@@ -105,7 +188,8 @@ export async function getSession(sessionId) {
     }
   }
 
-  return mockSessionsStore.get(sessionId) || null;
+  const store = loadMockSessions();
+  return store.get(sessionId) || mockSessionsStore.get(sessionId) || null;
 }
 
 /**
@@ -129,7 +213,8 @@ export async function getStudentSessions(studentId) {
   }
 
   // Mock fallback
-  return Array.from(mockSessionsStore.values())
+  const store = loadMockSessions();
+  return Array.from(store.values())
     .filter(s => s.studentId === studentId)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 }
@@ -148,5 +233,6 @@ export async function getAllSessions() {
     }
   }
 
-  return Array.from(mockSessionsStore.values());
+  const store = loadMockSessions();
+  return Array.from(store.values()).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 }

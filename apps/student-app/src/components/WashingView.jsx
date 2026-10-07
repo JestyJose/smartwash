@@ -55,9 +55,9 @@ export function WashingView({
       gap: '20px'
     }}>
       {/* Multimedia Instruction Panel */}
-      {!mediaFailed && (
+      {!mediaFailed ? (
         <div style={{ 
-          width: '100%', height: '180px', background: '#000', borderRadius: '18px', overflow: 'hidden', position: 'relative', border: '1px solid rgba(255,255,255,0.1)'
+          width: '100%', height: '170px', background: '#000', borderRadius: '18px', overflow: 'hidden', position: 'relative', border: '1px solid rgba(255,255,255,0.1)'
         }}>
           <video 
             key={`vid-step-${activeStep}`}
@@ -74,6 +74,45 @@ export function WashingView({
           />
           <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(0,0,0,0.6)', padding: '4px 8px', borderRadius: '6px', fontSize: '11px', color: '#fff' }}>
             ▶ Live Demonstration
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          width: '100%',
+          height: '130px',
+          background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.8))',
+          borderRadius: '16px',
+          padding: '16px 20px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '16px',
+          boxSizing: 'border-box'
+        }}>
+          <div style={{
+            width: '56px',
+            height: '56px',
+            borderRadius: '14px',
+            background: 'rgba(59, 130, 246, 0.15)',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '28px',
+            flexShrink: 0
+          }}>
+            {activeStep === 1 ? '👏' : activeStep === 2 ? '🤚' : activeStep === 3 ? '🤞' : activeStep === 4 ? '✊' : activeStep === 5 ? '👍' : '🤌'}
+          </div>
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              WHO Technique Instructions
+            </div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', margin: '2px 0' }}>
+              {currentStepInfo.name}
+            </div>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+              Perform continuous rubbing movement in front of the lens. Target duration: {recDuration} seconds.
+            </div>
           </div>
         </div>
       )}
@@ -189,17 +228,22 @@ export function WashingView({
             }
           }}
           style={{
-            padding: '6px 12px',
+            padding: '6px 14px',
             borderRadius: '6px',
-            border: '1px dashed rgba(255, 255, 255, 0.2)',
-            background: 'transparent',
-            color: '#94a3b8',
+            border: '1px dashed #f59e0b',
+            background: 'rgba(245, 158, 11, 0.1)',
+            color: '#fbbf24',
             fontSize: '11px',
-            cursor: 'pointer'
+            fontWeight: 600,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
           }}
-          title="Manual override for demo presentations"
+          title="Instructor / Testing Manual Override: Skip current step for presentation demonstration"
         >
-          Skip Step ➔
+          <span>🧪 [DEMO Override]</span>
+          <span>Skip Step ➔</span>
         </button>
       </div>
     </div>

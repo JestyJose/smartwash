@@ -6,10 +6,14 @@ import numpy as np
 import base64
 import time
 
-from .app import inferance
-from .utils.frame_combiner import combine_frames
+try:
+    from .app import inferance
+    from .utils.frame_combiner import combine_frames
+except (ImportError, ValueError):
+    from app import inferance
+    from utils.frame_combiner import combine_frames
 
-app = FastAPI()
+app = FastAPI(title="Smart Wash AI Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,12 +23,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Preload model once at module initialization so it does not reload on each connection
+print("[FastAPI] Initializing YOLO handwashing classification model...")
+infr = inferance()
+print("[FastAPI] Model loaded successfully!")
+
 @app.websocket("/ws_model")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    infr = inferance()
-    FRAME_STITCH = 5
-    frame_buffer = []
+    print("[FastAPI] WebSocket client connected")
 
     try:
         while True:
@@ -42,29 +49,27 @@ async def websocket_endpoint(websocket: WebSocket):
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             if frame is not None:
-                frame_buffer.append(frame)
-
-            # Process only when buffer is full
-            if len(frame_buffer) >= FRAME_STITCH:
-                combined = combine_frames(frame_buffer)
-                frame_buffer = []
-                
-                # Get single inference result
                 timestamp = time.time() * 1000
-                result = infr.predict(combined)
+                result = infr.predict(frame)
                 
                 await websocket.send_json({
                     "timestamp": timestamp,
                     "prediction": result
                 })
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[FastAPI] WebSocket closed/error: {e}")
     finally:
         try:
             await websocket.close()
         except:
             pass
+        print("[FastAPI] WebSocket client disconnected")
 
 @app.get("/")
 async def root():
-    return {"message": "Classification server is running"}
+    return {"message": "Classification server is running", "model": "YOLOv11 Handwashing"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=4550, reload=False)
+
